@@ -1428,7 +1428,6 @@ class TransformerGMMActorNetworkActionChunking(TransformerGMMActorNetwork):
             mod = list(obs_dict.keys())[0]
             goal_dict = TensorUtils.unsqueeze_expand_at(goal_dict, size=obs_dict[mod].shape[1], dim=1)
         forward_kwargs = dict(obs=obs_dict, goal=goal_dict)
-        #print("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
         outputs = MIMO_Transformer.forward(self, **forward_kwargs)
         # Only use the LAST timestep to predict all future actions
         #print("SUPERVISED: ", supervised)

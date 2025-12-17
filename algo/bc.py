@@ -148,6 +148,7 @@ class BC(PolicyAlgo):
             info (dict): dictionary of relevant inputs, outputs, and losses
                 that might be relevant for logging
         """
+        
         with TorchUtils.maybe_no_grad(no_grad=validate):
             info = super(BC, self).train_on_batch(batch, epoch, validate=validate)
             predictions = self._forward_training(batch)
@@ -850,10 +851,57 @@ class BC_Transformer_CHUNKING(BC_Transformer):
         )
         return OrderedDict(actions=pred)
 
+   # def _compute_losses(self, predictions, batch):
+   #     print("PREDICTIONS ACTIONS SHAPE:", predictions["actions"][0,0,:])
+   #     print("BATCH ACTIONS SHAPE:", batch["actions"][0,0,:])
+   #     return OrderedDict(action_loss=nn.MSELoss()(
+   #         predictions["actions"], batch["actions"]
+   #     ))
+
     def _compute_losses(self, predictions, batch):
-        return OrderedDict(action_loss=nn.MSELoss()(
-            predictions["actions"], batch["actions"]
-        ))
+        pred = predictions["actions"]
+        gt   = batch["actions"]
+
+        # ---- split actions ----
+        pos_pred = pred[..., :3]
+        pos_gt   = gt[..., :3]
+
+        quat_pred = pred[..., 3:7]
+        quat_gt   = gt[..., 3:7]
+
+        grip_pred = pred[..., 7]
+        grip_gt   = gt[..., 7]
+
+        # ---- position loss (metric-aligned, meters) ----
+        # Mean Euclidean distance
+        pos_loss = torch.norm(pos_pred - pos_gt, dim=-1).mean()
+
+        # ---- quaternion loss (geodesic) ----
+        quat_pred = F.normalize(quat_pred, dim=-1)
+        quat_gt   = F.normalize(quat_gt, dim=-1)
+        dot = torch.abs(torch.sum(quat_pred * quat_gt, dim=-1))
+        quat_loss = (1.0 - dot).mean()
+
+        # ---- gripper loss ----
+        # assumes continuous or {-1,1}
+        grip_loss = F.mse_loss(grip_pred, grip_gt)
+
+        # ---- total loss (weights matter!) ----
+        action_loss = (
+            1.0 * pos_loss +
+            0.1 * quat_loss +
+            0.01 * grip_loss
+        ) 
+        with torch.no_grad():
+            pos_err_cm = pos_loss * 100.0
+
+        return OrderedDict(
+            action_loss=action_loss,
+            pos_loss=pos_loss,
+            quat_loss=quat_loss,
+            grip_loss=grip_loss,
+            pos_err_cm=pos_err_cm,
+        )
 
     def reset(self):
         """
@@ -944,7 +992,6 @@ class BC_Transformer_GMM(BC_Transformer):
             dim=1, 
             msg="Error: expect temporal dimension of obs batch to match transformer context length {}".format(self.context_length),
         )
-
         dists = self.nets["policy"].forward_train(
             obs_dict=batch["obs"], 
             actions=None,
@@ -1022,7 +1069,6 @@ class BC_Transformer_GMM_CHUNKING(BC_Transformer_GMM):
         assert self.algo_config.gmm.enabled
         assert self.algo_config.transformer.enabled
         print("-----------------Training to create Chunking-----------------")
-        print("goal_shapes:", self.goal_shapes)
         self.nets = nn.ModuleDict()
         self.nets["policy"] = PolicyNets.TransformerGMMActorNetworkActionChunking(
             obs_shapes=self.obs_shapes,
@@ -1062,7 +1108,7 @@ class BC_Transformer_GMM_CHUNKING(BC_Transformer_GMM):
             input_batch["actions"] = batch["actions"][:, :h+chunk_size, :]
         else:
             # just use current timestep
-            input_batch["actions"] = batch["actions"][:, h-1:h+chunk_size, :]
+            input_batch["actions"] = batch["actions"][:, h:h+chunk_size, :]
 
         input_batch = TensorUtils.to_device(TensorUtils.to_float(input_batch), self.device)
         

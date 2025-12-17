@@ -487,6 +487,7 @@ def normalize_obs(obs_dict, obs_normalization_stats):
 
         # check shape consistency
         shape_len_diff = len(mean.shape) - len(obs_dict[m].shape)
+        
         assert shape_len_diff in [0, 1], "shape length mismatch in @normalize_obs"
         assert mean.shape[shape_len_diff:] == obs_dict[m].shape, "shape mismatch in @normalize obs"
 

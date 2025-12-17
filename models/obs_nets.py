@@ -24,7 +24,95 @@ import robomimic.utils.obs_utils as ObsUtils
 from robomimic.models.base_nets import Module, Sequential, MLP, RNN_Base, ResNet18Conv, SpatialSoftmax, \
     FeatureAggregator
 from robomimic.models.obs_core import VisualCore, Randomizer
+from robomimic.models.VisualCore_MSC import VisualCore_MSC
+from robomimic.models.MLP_Core import MLPEncoder, MLPEncoderOutputBN
+from robomimic.models.NormalizationCore import NormEncoder
 from robomimic.models.transformers import PositionalEncoding, GPT_Backbone
+from robomimic.models.base_nets import MLP
+"""def obs_encoder_factory(
+        obs_shapes,
+        feature_activation=nn.ReLU,
+        encoder_kwargs=None,
+    ):
+    
+    Utility function to create an @ObservationEncoder from kwargs specified in config.
+
+    Args:
+        obs_shapes (OrderedDict): a dictionary that maps observation key to
+            expected shapes for observations.
+
+        feature_activation: non-linearity to apply after each obs net - defaults to ReLU. Pass
+            None to apply no activation.
+
+        encoder_kwargs (dict or None): If None, results in default encoder_kwargs being applied. Otherwise, should be
+            nested dictionary containing relevant per-modality information for encoder networks.
+            Should be of form:
+
+            obs_modality1: dict
+                feature_dimension: int
+                core_class: str
+                core_kwargs: dict
+                    ...
+                    ...
+                obs_randomizer_class: str
+                obs_randomizer_kwargs: dict
+                    ...
+                    ...
+            obs_modality2: dict
+                ...
+    
+    enc = ObservationEncoder(feature_activation=feature_activation)
+    for k, obs_shape in obs_shapes.items():
+        obs_modality = ObsUtils.OBS_KEYS_TO_MODALITIES[k]
+        enc_kwargs = deepcopy(ObsUtils.DEFAULT_ENCODER_KWARGS[obs_modality]) if encoder_kwargs is None else \
+            deepcopy(encoder_kwargs[obs_modality])
+        
+        for obs_module, cls_mapping in zip(("core", "obs_randomizer"),
+                                      (ObsUtils.OBS_ENCODER_CORES, ObsUtils.OBS_RANDOMIZERS)):
+            # Sanity check for kwargs in case they don't exist / are None
+            if enc_kwargs.get(f"{obs_module}_kwargs", None) is None:
+                enc_kwargs[f"{obs_module}_kwargs"] = {}
+            # Add in input shape info
+            enc_kwargs[f"{obs_module}_kwargs"]["input_shape"] = obs_shape
+            # If group class is specified, then make sure corresponding kwargs only contain relevant kwargs
+            if enc_kwargs[f"{obs_module}_class"] is not None:
+                enc_kwargs[f"{obs_module}_kwargs"] = extract_class_init_kwargs_from_dict(
+                    cls=cls_mapping[enc_kwargs[f"{obs_module}_class"]],
+                    dic=enc_kwargs[f"{obs_module}_kwargs"],
+                    copy=False,
+                )
+
+        # Add in input shape info
+        randomizer = None if enc_kwargs["obs_randomizer_class"] is None else \
+            ObsUtils.OBS_RANDOMIZERS[enc_kwargs["obs_randomizer_class"]](**enc_kwargs["obs_randomizer_kwargs"])
+        
+        core_class = enc_kwargs["core_class"]
+        core_kwargs = enc_kwargs["core_kwargs"]
+        print("core_class:", core_class, "core_kwargs:", core_kwargs)
+        if isinstance(core_class, dict):
+            # Per-key configuration
+            net_class = core_class.get(k, core_class.get("default", None))
+        else:
+            # Single configuration for all keys
+            net_class = core_class
+            
+        if isinstance(core_kwargs, dict) and k in core_kwargs:
+            # Per-key kwargs
+            net_kwargs = core_kwargs[k]
+        else:
+            # Shared kwargs for all keys
+            net_kwargs = core_kwargs
+        
+        enc.register_obs_key(
+            name=k,
+            shape=obs_shape,
+            net_class=net_class,
+            net_kwargs=net_kwargs,
+            randomizer=randomizer,
+        )
+
+    enc.make()
+    return enc"""
 
 def obs_encoder_factory(
         obs_shapes,
@@ -63,7 +151,28 @@ def obs_encoder_factory(
         obs_modality = ObsUtils.OBS_KEYS_TO_MODALITIES[k]
         enc_kwargs = deepcopy(ObsUtils.DEFAULT_ENCODER_KWARGS[obs_modality]) if encoder_kwargs is None else \
             deepcopy(encoder_kwargs[obs_modality])
-
+        
+        # Check if there's a per-key configuration for this observation key
+        if k in enc_kwargs and isinstance(enc_kwargs[k], dict):
+            # Per-key configuration exists - merge it with the base config
+            key_specific_config = enc_kwargs[k]
+            
+            # Override core_class if specified for this key
+            if "core_class" in key_specific_config:
+                enc_kwargs["core_class"] = key_specific_config["core_class"]
+            
+            # Override core_kwargs if specified for this key
+            if "core_kwargs" in key_specific_config:
+                enc_kwargs["core_kwargs"] = key_specific_config["core_kwargs"]
+            
+            # Override obs_randomizer_class if specified for this key
+            if "obs_randomizer_class" in key_specific_config:
+                enc_kwargs["obs_randomizer_class"] = key_specific_config["obs_randomizer_class"]
+            
+            # Override obs_randomizer_kwargs if specified for this key
+            if "obs_randomizer_kwargs" in key_specific_config:
+                enc_kwargs["obs_randomizer_kwargs"] = key_specific_config["obs_randomizer_kwargs"]
+        
         for obs_module, cls_mapping in zip(("core", "obs_randomizer"),
                                       (ObsUtils.OBS_ENCODER_CORES, ObsUtils.OBS_RANDOMIZERS)):
             # Sanity check for kwargs in case they don't exist / are None
@@ -82,19 +191,23 @@ def obs_encoder_factory(
         # Add in input shape info
         randomizer = None if enc_kwargs["obs_randomizer_class"] is None else \
             ObsUtils.OBS_RANDOMIZERS[enc_kwargs["obs_randomizer_class"]](**enc_kwargs["obs_randomizer_kwargs"])
-
+        
+        # Get core_class and core_kwargs (already updated above if per-key config exists)
+        net_class = enc_kwargs["core_class"]
+        net_kwargs = enc_kwargs["core_kwargs"]
+        
+        print(f"Registering obs key '{k}': net_class={net_class}, net_kwargs={net_kwargs}")
+        
         enc.register_obs_key(
             name=k,
             shape=obs_shape,
-            net_class=enc_kwargs["core_class"],
-            net_kwargs=enc_kwargs["core_kwargs"],
+            net_class=net_class,
+            net_kwargs=net_kwargs,
             randomizer=randomizer,
         )
 
     enc.make()
     return enc
-
-
 class ObservationEncoder(Module):
     """
     Module that processes inputs by observation key and then concatenates the processed
@@ -408,6 +521,7 @@ class ObservationGroupEncoder(Module):
         # create an observation encoder per observation group
         self.nets = nn.ModuleDict()
         for obs_group in self.observation_group_shapes:
+            print(obs_group)
             self.nets[obs_group] = obs_encoder_factory(
                 obs_shapes=self.observation_group_shapes[obs_group],
                 feature_activation=feature_activation,
@@ -919,6 +1033,9 @@ class MIMO_Transformer(Module):
         self.params = nn.ParameterDict()
 
         # Encoder for all observation groups.
+        print("MIMO_MLP: Creating encoder.....................................................")
+        print(f"MIMO_MLP: input_obs_group_shapes: {input_obs_group_shapes}")
+        print("encoder_kwargs:", encoder_kwargs)
         self.nets["encoder"] = ObservationGroupEncoder(
             observation_group_shapes=input_obs_group_shapes,
             encoder_kwargs=encoder_kwargs,
