@@ -546,6 +546,7 @@ def run_epoch(model, data_loader, epoch, validate=False, num_steps=None, obs_nor
             data_loader_iter = iter(data_loader)
             t = time.time()
             batch = next(data_loader_iter)
+        print("Data loading time:", time.time() - t)
         timing_stats["Data_Loading"].append(time.time() - t)
         # process batch for training
         t = time.time()

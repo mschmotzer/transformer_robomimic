@@ -1,5 +1,3 @@
-
-
 import abc
 import numpy as np
 import textwrap
@@ -22,11 +20,10 @@ from robomimic.utils.vis_utils import visualize_image_randomizer
 from robomimic.macros import VISUALIZE_RANDOMIZER
 
 
-
-class VisualCore_MSC(EncoderCore, BaseNets.ConvBase):
+class VisualCore_MSC(EncoderCore.VisualCore):
     """
     A network block that combines a visual backbone network with optional pooling
-    and linear layers.
+    and linear layers, followed by an optional MLP projection.
     """
     def __init__(
         self,
@@ -37,6 +34,9 @@ class VisualCore_MSC(EncoderCore, BaseNets.ConvBase):
         pool_kwargs=None,
         flatten=True,
         feature_dimension=64,
+        mlp_layer_dims=None,
+        mlp_output_dim=None,
+        mlp_activation="relu",
     ):
         """
         Args:
@@ -51,91 +51,88 @@ class VisualCore_MSC(EncoderCore, BaseNets.ConvBase):
             flatten (bool): whether to flatten the visual features
             feature_dimension (int): if not None, add a Linear layer to
                 project output into a desired feature dimension
+            mlp_layer_dims (list): dimensions of hidden layers for the MLP (optional)
+            mlp_output_dim (int): output dimension of the MLP (optional)
+            mlp_activation (str or callable): activation function for MLP. Options: "tanh", "relu", or a torch.nn activation class
         """
-        print("WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW", input_shape)
-        super(VisualCore_MSC, self).__init__(input_shape=input_shape)
-        self.flatten = flatten
-
-        if backbone_kwargs is None:
-            backbone_kwargs = dict()
-
-        # add input channel dimension to visual core inputs
-        backbone_kwargs["input_channel"] = input_shape[0]
-
-        # extract only relevant kwargs for this specific backbone
-        backbone_kwargs = extract_class_init_kwargs_from_dict(cls=eval(backbone_class), dic=backbone_kwargs, copy=True)
-
-        # visual backbone
-        assert isinstance(backbone_class, str)
-        self.backbone = eval(backbone_class)(**backbone_kwargs)
-
-        assert isinstance(self.backbone, BaseNets.ConvBase)
-
-        feat_shape = self.backbone.output_shape(input_shape)
-        net_list = [self.backbone]
-
-        # maybe make pool net
-        if pool_class is not None:
-            assert isinstance(pool_class, str)
-            # feed output shape of backbone to pool net
-            if pool_kwargs is None:
-                pool_kwargs = dict()
-            # extract only relevant kwargs for this specific backbone
-            pool_kwargs["input_shape"] = feat_shape
-            pool_kwargs = extract_class_init_kwargs_from_dict(cls=eval(pool_class), dic=pool_kwargs, copy=True)
-            self.pool = eval(pool_class)(**pool_kwargs)
-            assert isinstance(self.pool, BaseNets.Module)
-
-            feat_shape = self.pool.output_shape(feat_shape)
-            net_list.append(self.pool)
+        print("SHPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP______________________", backbone_class)
+        # Call parent __init__ with all the same parameters
+        super(VisualCore_MSC, self).__init__(
+            input_shape=input_shape,
+            backbone_class=backbone_class,
+            pool_class=pool_class,
+            backbone_kwargs=backbone_kwargs,
+            pool_kwargs=pool_kwargs,
+            flatten=flatten,
+            feature_dimension=feature_dimension,
+        )
+        
+        # Get the output shape from the parent's visual core
+        visual_output_shape = super(VisualCore_MSC, self).output_shape(input_shape)
+        print("VisualCore_MSC visual output shape:", visual_output_shape)
+        in_dim = int(np.prod(visual_output_shape))
+        
+        # Setup MLP activation
+        act_cls = None
+        if mlp_activation is None:
+            act_cls = None
         else:
-            self.pool = None
-
-        # flatten layer
-        if self.flatten:
-            net_list.append(torch.nn.Flatten(start_dim=1, end_dim=-1))
-
-        # maybe linear layer
-        self.feature_dimension = feature_dimension
-        if feature_dimension is not None:
-            assert self.flatten
-            linear = torch.nn.Linear(int(np.prod(feat_shape)), feature_dimension)
-            net_list.append(linear)
-
-        self.nets = nn.Sequential(*net_list)
+            if isinstance(mlp_activation, str):
+                if mlp_activation.lower() == "tanh":
+                    act_cls = nn.Tanh
+                else:
+                    # fallback to ReLU for unknown strings
+                    act_cls = nn.ReLU
+            else:
+                act_cls = mlp_activation
+        
+        # Create MLP if layer_dims or output_dim is specified
+        layer_dims = [] if mlp_layer_dims is None else list(mlp_layer_dims)
+        out_dim = in_dim if mlp_output_dim is None else int(mlp_output_dim)
+        
+        # Only create MLP if we're actually projecting to a different dimension
+        # or if layer_dims is specified
+        if mlp_output_dim is not None or (mlp_layer_dims is not None and len(mlp_layer_dims) > 0):
+            self._mlp = BaseNets.MLP(
+                input_dim=in_dim,
+                output_dim=out_dim,
+                layer_dims=layer_dims,
+                activation=act_cls if act_cls is not None else nn.ReLU,
+            )
+            self._final_output_dim = out_dim
+        else:
+            self._mlp = None
+            self._final_output_dim = in_dim
 
     def output_shape(self, input_shape):
         """
-        Function to compute output shape from inputs to this module. 
-
-        Args:
-            input_shape (iterable of int): shape of input. Does not include batch dimension.
-                Some modules may not need this argument, if their output does not depend 
-                on the size of the input, or if they assume fixed size input.
-
-        Returns:
-            out_shape ([int]): list of integers corresponding to output shape
+        Returns output shape for this module, which is a flat array if flatten=True, 
+        otherwise it's the output of the visual backbone + pooling, potentially 
+        projected through an MLP.
         """
-        if self.feature_dimension is not None:
-            # linear output
-            return [self.feature_dimension]
-        feat_shape = self.backbone.output_shape(input_shape)
-        if self.pool is not None:
-            # pool output
-            feat_shape = self.pool.output_shape(feat_shape)
-        # backbone + flat output
-        if self.flatten:
-            return [np.prod(feat_shape)]
+        if self._mlp is not None:
+            return [self._final_output_dim]
         else:
-            return feat_shape
+            return super(VisualCore_MSC, self).output_shape(input_shape)
 
     def forward(self, inputs):
         """
-        Forward pass through visual core.
+        Forward pass through visual core and optional MLP.
         """
         ndim = len(self.input_shape)
         assert tuple(inputs.shape)[-ndim:] == tuple(self.input_shape)
-        return super(VisualCore, self).forward(inputs)
+        
+        # Pass through parent's visual core (backbone + pool + feature projection)
+        x = self.nets(inputs)
+        
+        # Pass through MLP if it exists
+        if self._mlp is not None:
+            # Flatten if needed
+            if len(x.shape) > 2:
+                x = x.reshape(x.shape[0], -1)
+            x = self._mlp(x)
+        
+        return x
 
     def __repr__(self):
         """Pretty print network."""
@@ -146,6 +143,7 @@ class VisualCore_MSC(EncoderCore, BaseNets.ConvBase):
             "\ninput_shape={}\noutput_shape={}".format(self.input_shape, self.output_shape(self.input_shape)), indent)
         msg += textwrap.indent("\nbackbone_net={}".format(self.backbone), indent)
         msg += textwrap.indent("\npool_net={}".format(self.pool), indent)
+        if self._mlp is not None:
+            msg += textwrap.indent("\nmlp={}".format(self._mlp), indent)
         msg = header + '(' + msg + '\n)'
         return msg
-

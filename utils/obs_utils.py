@@ -382,7 +382,6 @@ def process_frame(frame, channel_dim, scale):
     frame /= scale
     frame = frame.clip(0.0, 1.0)
     frame = batch_image_hwc_to_chw(frame)
-
     return frame
 
 

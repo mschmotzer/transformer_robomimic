@@ -569,7 +569,7 @@ class R3MConv(ConvBase):
             print("WARNING: could not load r3m library! Please follow https://github.com/facebookresearch/r3m to install R3M")
 
         net = load_r3m(r3m_model_class)
-
+        print("INut channel:", input_channel)
         assert input_channel == 3 # R3M only support input image with channel size 3
         assert r3m_model_class in ["resnet18", "resnet34", "resnet50"] # make sure the selected r3m model do exist
 
